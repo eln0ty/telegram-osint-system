@@ -1,0 +1,39 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.so
+
+# Virtual environments
+.venv/
+venv/
+
+# Environment files
+.env
+.env.local
+
+# Logs and temp files
+logs/
+!logs/.gitkeep
+!logs/airflow/
+!logs/airflow/.gitkeep
+!logs/airflow/scheduler/
+!logs/airflow/scheduler/.gitkeep
+!logs/airflow/dag_processor/
+!logs/airflow/dag_processor/.gitkeep
+!logs/application/
+!logs/application/.gitkeep
+*.log
+
+# IDE settings
+.vscode/
+.idea/
+
+# Bytecode caches
+*.egg-info/
+dist/
+build/
+
+# Docker
+*.pid
+tmp/

@@ -1,0 +1,216 @@
+x-env-files: &default-env
+  env_file:
+    - ../.env
+
+services:
+  postgres:
+    image: postgres:15
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-osint}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-osint}
+      POSTGRES_DB: ${POSTGRES_DB:-osint}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+      - ./postgres/create-partitions.sql:/docker-entrypoint-initdb.d/01-create-partitions.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-osint}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "5432:5432"
+    networks: [backend]
+
+  airflow-db:
+    image: postgres:15
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${AIRFLOW_DB_USER:-airflow}
+      POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD:-airflow}
+      POSTGRES_DB: ${AIRFLOW_DB_NAME:-airflow}
+    volumes:
+      - airflow_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${AIRFLOW_DB_USER:-airflow}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [backend]
+
+  pgadmin:
+    image: dpage/pgadmin4:8.6
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@example.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+    ports:
+      - "5050:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [backend]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "6379:6379"
+    networks: [backend]
+
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-osint}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-osint}
+      RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_VHOST:-/}
+      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "-rabbit loopback_users []"
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [backend]
+
+  producer:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile
+    image: telegram-osint/app:latest
+    command: ["python", "-m", "code.producer"]
+    <<: *default-env
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      REDIS_HOST: redis
+      PGHOST: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [backend]
+
+  worker:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile
+    image: telegram-osint/app:latest
+    command: ["python", "-m", "code.worker"]
+    <<: *default-env
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      REDIS_HOST: redis
+      PGHOST: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      replicas: 3
+    networks: [backend]
+
+  airflow-init:
+    build:
+      context: ..
+      dockerfile: deployment/airflow.Dockerfile
+    image: telegram-osint/airflow:latest
+    <<: *default-env
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_DB_USER:-airflow}:${AIRFLOW_DB_PASSWORD:-airflow}@airflow-db:5432/${AIRFLOW_DB_NAME:-airflow}
+      PYTHONPATH: /opt/project
+    volumes:
+      - ../code/dags:/opt/airflow/dags:ro
+      - ../logs/airflow:/opt/airflow/logs
+      - ../code:/opt/project/code:ro
+    entrypoint: /bin/bash
+    command: >
+      -c "airflow db upgrade &&
+          airflow users create --username ${AIRFLOW_USERNAME:-admin} --firstname Admin --lastname User --role Admin --email ${AIRFLOW_EMAIL:-admin@example.com} --password ${AIRFLOW_PASSWORD:-admin} || true"
+    depends_on:
+      airflow-db:
+        condition: service_healthy
+    networks: [backend]
+
+  airflow-webserver:
+    build:
+      context: ..
+      dockerfile: deployment/airflow.Dockerfile
+    image: telegram-osint/airflow:latest
+    restart: unless-stopped
+    <<: *default-env
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_DB_USER:-airflow}:${AIRFLOW_DB_PASSWORD:-airflow}@airflow-db:5432/${AIRFLOW_DB_NAME:-airflow}
+      PYTHONPATH: /opt/project
+    volumes:
+      - ../code/dags:/opt/airflow/dags:ro
+      - ../logs/airflow:/opt/airflow/logs
+      - ../code:/opt/project/code:ro
+    command: ["webserver"]
+    ports:
+      - "8080:8080"
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      airflow-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks: [backend]
+
+  airflow-scheduler:
+    build:
+      context: ..
+      dockerfile: deployment/airflow.Dockerfile
+    image: telegram-osint/airflow:latest
+    restart: unless-stopped
+    <<: *default-env
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_DB_USER:-airflow}:${AIRFLOW_DB_PASSWORD:-airflow}@airflow-db:5432/${AIRFLOW_DB_NAME:-airflow}
+      PYTHONPATH: /opt/project
+    volumes:
+      - ../code/dags:/opt/airflow/dags:ro
+      - ../logs/airflow:/opt/airflow/logs
+      - ../code:/opt/project/code:ro
+    command: ["scheduler"]
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      airflow-db:
+        condition: service_healthy
+    networks: [backend]
+
+volumes:
+  postgres_data:
+  airflow_db_data:
+
+networks:
+  backend:
+    driver: bridge
