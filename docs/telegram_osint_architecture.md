@@ -28,8 +28,8 @@ This document captures the updated architecture for the Telegram OSINT platform,
                     │  Durable, HA Ready  │  • Backpressure buffer
                     └──────────┬──────────┘
                                │
-                  ┌────────────┼────────────┐
-                  │            │            │
+                  ┌────────────┼───────────┐
+                  │            │           │
            ┌──────▼─────┐ ┌────▼────┐ ┌────▼─────┐
            │  WORKER 1  │ │WORKER 2 │ │ WORKER 3 │  Always running
            │ • Validate │ │• Dedup  │ │ • Persist│  • Auto-scale
@@ -37,7 +37,7 @@ This document captures the updated architecture for the Telegram OSINT platform,
                   │            │           │
                   └────────────┼───────────┘
                                │
-              ┌────────────────┴────────────────┐
+              ┌────────────────┴───────────────┐
               │                │               │
       ┌───────▼──────┐ ┌───────▼──────┐ ┌──────▼─────────┐
       │ POSTGRESQL   │ │    REDIS     │ │ ELASTICSEARCH* │
@@ -46,7 +46,7 @@ This document captures the updated architecture for the Telegram OSINT platform,
       └──────────────┘ └──────────────┘ └────────────────┘
 ```
 
-\* Elasticsearch integration remains optional; the 2.0 release focuses on PostgreSQL as the system of record.
+\* Elasticsearch integration remains optional; This release focuses on PostgreSQL as the system of record.
 
 ---
 
